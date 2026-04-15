@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: fern-sales-agent
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: ASSISTANT_NAME
+        value: Fern
+      - key: OPENAI_REALTIME_MODEL
+        value: gpt-realtime
+      - key: OPENAI_REALTIME_VOICE
+        value: marin

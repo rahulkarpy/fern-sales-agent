@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Verdant Studio | Fern Voice Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Best-in-class natural plant sales agent</p>
+          <h1>Meet Fern, the AI voice concierge that sells plants like a boutique rep.</h1>
+          <p class="lede">
+            Fern can talk live on your website today and can also answer a phone number once you
+            route SIP calls into the same agent profile.
+          </p>
+          <div class="hero-actions">
+            <button id="start-call" class="primary">Start live website call</button>
+            <button id="end-call" class="secondary" disabled>End call</button>
+            <button id="run-check" class="secondary">Run connection check</button>
+            <button id="test-voice" class="secondary" disabled>Test Fern voice</button>
+          </div>
+          <div class="status-card">
+            <div>
+              <span class="label">Status</span>
+              <strong id="call-status">Idle and ready</strong>
+            </div>
+            <div>
+              <span class="label">Connection</span>
+              <strong id="connection-mode">Browser WebRTC</strong>
+            </div>
+            <div>
+              <span class="label">Microphone</span>
+              <strong id="mic-status">Waiting to start</strong>
+            </div>
+            <div>
+              <span class="label">Speaker test</span>
+              <strong id="speaker-status">Not tested yet</strong>
+            </div>
+          </div>
+        </div>
+        <aside class="hero-panel">
+          <div class="panel-glow"></div>
+          <p class="panel-kicker">Voice brief</p>
+          <ul class="brief-list">
+            <li>Real-time speech conversation</li>
+            <li>Plant-fit recommendations</li>
+            <li>Sales-forward but warm</li>
+            <li>Web and phone-ready architecture</li>
+          </ul>
+          <p class="disclosure">
+            Fern introduces itself as an AI concierge so the experience stays natural without being deceptive.
+          </p>
+        </aside>
+      </header>
+
+      <main class="content-grid">
+        <section class="card transcript-card">
+          <div class="section-heading">
+            <p class="eyebrow">Live session</p>
+            <h2>Event stream</h2>
+          </div>
+          <div id="event-log" class="event-log">
+            <p class="event muted">Session events will appear here once a call starts.</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-heading">
+            <p class="eyebrow">Catalog</p>
+            <h2>Plants Fern can sell</h2>
+          </div>
+          <div id="catalog" class="catalog-grid"></div>
+        </section>
+
+        <section class="card architecture-card">
+          <div class="section-heading">
+            <p class="eyebrow">Channel strategy</p>
+            <h2>How web and phone both work</h2>
+          </div>
+          <div class="steps">
+            <div>
+              <span>01</span>
+              <p>Website calls use WebRTC for fast browser audio with the Realtime API.</p>
+            </div>
+            <div>
+              <span>02</span>
+              <p>Phone calls route through your SIP trunk provider into OpenAI SIP.</p>
+            </div>
+            <div>
+              <span>03</span>
+              <p>Your webhook accepts incoming calls and applies the same plant-sales instructions.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <audio id="remote-audio" autoplay></audio>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
