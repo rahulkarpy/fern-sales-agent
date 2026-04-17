@@ -1,10 +1,11 @@
 import "dotenv/config";
 import crypto from "node:crypto";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import express from "express";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +18,7 @@ const defaultVoice = process.env.OPENAI_REALTIME_VOICE || "marin";
 const publicBaseUrl = process.env.PUBLIC_BASE_URL || "";
 const isProduction = process.env.NODE_ENV === "production";
 const startupUrl = publicBaseUrl || `http://localhost:${port}`;
+const publicWebSocketBaseUrl = startupUrl.replace(/^http/i, "ws");
 
 const plantCatalog = [
   {
@@ -108,6 +110,42 @@ function buildSessionConfig(channel = "web") {
         }
       },
       output: {
+        voice: defaultVoice
+      }
+    }
+  };
+}
+
+function buildPhoneBridgeSessionConfig() {
+  return {
+    type: "realtime",
+    model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
+    instructions: buildRealtimeInstructions("phone"),
+    audio: {
+      input: {
+        format: {
+          type: "audio/pcmu"
+        },
+        noise_reduction: {
+          type: "far_field"
+        },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 700,
+          create_response: true,
+          interrupt_response: true
+        },
+        transcription: {
+          model: "gpt-4o-mini-transcribe",
+          language: "en"
+        }
+      },
+      output: {
+        format: {
+          type: "audio/pcmu"
+        },
         voice: defaultVoice
       }
     }
@@ -242,6 +280,169 @@ function monitorSipCall(callId) {
   });
 }
 
+function createTwimlStreamResponse() {
+  const streamUrl = `${publicWebSocketBaseUrl}/api/twilio/media-stream`;
+  return [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<Response>",
+    "  <Connect>",
+    `    <Stream url="${streamUrl}" />`,
+    "  </Connect>",
+    "</Response>"
+  ].join("");
+}
+
+function sendTwilioMedia(ws, streamSid, payload) {
+  if (!streamSid || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(
+    JSON.stringify({
+      event: "media",
+      streamSid,
+      media: {
+        payload
+      }
+    })
+  );
+}
+
+function sendTwilioClear(ws, streamSid) {
+  if (!streamSid || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(
+    JSON.stringify({
+      event: "clear",
+      streamSid
+    })
+  );
+}
+
+function attachTwilioMediaBridge(clientSocket) {
+  let twilioStreamSid = null;
+  let openAiSocket = null;
+  let openAiReady = false;
+  let greetingSent = false;
+
+  const closeBoth = () => {
+    if (clientSocket.readyState === WebSocket.OPEN) {
+      clientSocket.close();
+    }
+
+    if (openAiSocket && openAiSocket.readyState === WebSocket.OPEN) {
+      openAiSocket.close();
+    }
+  };
+
+  openAiSocket = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-realtime", {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    }
+  });
+
+  openAiSocket.on("open", () => {
+    openAiReady = true;
+    openAiSocket.send(
+      JSON.stringify({
+        type: "session.update",
+        session: buildPhoneBridgeSessionConfig()
+      })
+    );
+  });
+
+  openAiSocket.on("message", (rawMessage) => {
+    try {
+      const event = JSON.parse(rawMessage.toString());
+
+      if (event.type === "session.updated" && !greetingSent) {
+        greetingSent = true;
+        openAiSocket.send(
+          JSON.stringify({
+            type: "response.create",
+            response: {
+              audio: {
+                output: {
+                  format: {
+                    type: "audio/pcmu"
+                  }
+                }
+              },
+              instructions:
+                `Greet the caller as ${assistantName}, say you are an AI plant concierge at Verdant Studio, ` +
+                "and ask what kind of room, light, or plant problem they are shopping for today."
+            }
+          })
+        );
+      }
+
+      if (event.type === "response.output_audio.delta" && event.delta) {
+        sendTwilioMedia(clientSocket, twilioStreamSid, event.delta);
+      }
+
+      if (event.type === "input_audio_buffer.speech_started") {
+        sendTwilioClear(clientSocket, twilioStreamSid);
+      }
+
+      if (event.type === "error") {
+        console.error("OpenAI phone bridge error:", event.error?.message || event);
+      }
+    } catch (error) {
+      console.error("Failed to parse OpenAI phone bridge event:", error);
+    }
+  });
+
+  openAiSocket.on("close", () => {
+    if (clientSocket.readyState === WebSocket.OPEN) {
+      clientSocket.close();
+    }
+  });
+
+  openAiSocket.on("error", (error) => {
+    console.error("OpenAI bridge socket error:", error);
+  });
+
+  clientSocket.on("message", (rawMessage) => {
+    try {
+      const message = JSON.parse(rawMessage.toString());
+
+      if (message.event === "start") {
+        twilioStreamSid = message.start?.streamSid ?? null;
+        console.log("Twilio media stream started:", twilioStreamSid);
+        return;
+      }
+
+      if (message.event === "media" && openAiReady && message.media?.payload) {
+        openAiSocket.send(
+          JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: message.media.payload
+          })
+        );
+        return;
+      }
+
+      if (message.event === "stop") {
+        closeBoth();
+      }
+    } catch (error) {
+      console.error("Failed to parse Twilio media event:", error);
+    }
+  });
+
+  clientSocket.on("close", () => {
+    if (openAiSocket && openAiSocket.readyState === WebSocket.OPEN) {
+      openAiSocket.close();
+    }
+  });
+
+  clientSocket.on("error", (error) => {
+    console.error("Twilio media socket error:", error);
+  });
+}
+
 if (isProduction) {
   app.set("trust proxy", 1);
 }
@@ -262,6 +463,10 @@ app.get("/api/catalog", (_req, res) => {
     assistantName,
     plants: plantCatalog
   });
+});
+
+app.post("/api/twilio/voice", (_req, res) => {
+  res.type("text/xml").send(createTwimlStreamResponse());
 });
 
 app.get("/api/diagnostics/realtime", async (_req, res) => {
@@ -378,7 +583,32 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: "Internal server error." });
 });
 
-const server = app.listen(port, () => {
+const server = http.createServer(app);
+const twilioMediaServer = new WebSocketServer({ noServer: true });
+
+twilioMediaServer.on("connection", (socket) => {
+  if (!process.env.OPENAI_API_KEY) {
+    socket.close();
+    return;
+  }
+
+  attachTwilioMediaBridge(socket);
+});
+
+server.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url, "http://localhost");
+
+  if (url.pathname !== "/api/twilio/media-stream") {
+    socket.destroy();
+    return;
+  }
+
+  twilioMediaServer.handleUpgrade(request, socket, head, (ws) => {
+    twilioMediaServer.emit("connection", ws, request);
+  });
+});
+
+server.listen(port, () => {
   console.log(`Fern sales agent listening on ${startupUrl}`);
 });
 
