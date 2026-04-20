@@ -15,6 +15,7 @@ let dataChannel = null;
 let audioContext = null;
 let analyser = null;
 let micAnimationFrame = null;
+let toolCallInFlight = false;
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -70,6 +71,57 @@ function summarizePayload(payload) {
   }
 
   return null;
+}
+
+async function executeTool(functionName, args) {
+  const url =
+    functionName === "lookup_plant_care"
+      ? `/api/tools/plant-care?plant_name=${encodeURIComponent(args.plant_name || "")}`
+      : `/api/tools/home-depot?address=${encodeURIComponent(args.address || "")}`;
+
+  const response = await fetch(url);
+  return response.json();
+}
+
+async function maybeHandleToolCalls(payload) {
+  if (!payload.response?.output || toolCallInFlight) {
+    return;
+  }
+
+  const toolCalls = payload.response.output.filter((item) => item.type === "function_call");
+  if (!toolCalls.length || !dataChannel || dataChannel.readyState !== "open") {
+    return;
+  }
+
+  toolCallInFlight = true;
+
+  try {
+    for (const toolCall of toolCalls) {
+      const args = JSON.parse(toolCall.arguments || "{}");
+      const toolResult = await executeTool(toolCall.name, args);
+
+      dataChannel.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: toolCall.call_id,
+            output: JSON.stringify(toolResult)
+          }
+        })
+      );
+    }
+
+    dataChannel.send(
+      JSON.stringify({
+        type: "response.create"
+      })
+    );
+  } catch (error) {
+    logEvent("error", `Tool call failed: ${error.message}`);
+  } finally {
+    toolCallInFlight = false;
+  }
 }
 
 function renderCatalog(plants) {
@@ -215,6 +267,12 @@ async function startCall() {
     });
     dataChannel.addEventListener("message", (event) => {
       const payload = JSON.parse(event.data);
+      if (payload.type === "response.done") {
+        maybeHandleToolCalls(payload).catch((error) => {
+          logEvent("error", `Tool handling failed: ${error.message}`);
+        });
+      }
+
       const text =
         summarizePayload(payload) ||
         payload.transcript ||

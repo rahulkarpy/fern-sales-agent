@@ -58,6 +58,41 @@ const plantCatalog = [
   }
 ];
 
+const realtimeTools = [
+  {
+    type: "function",
+    name: "lookup_plant_care",
+    description:
+      "Look up plant care guidance for a named plant when the answer is not in the local catalog.",
+    parameters: {
+      type: "object",
+      properties: {
+        plant_name: {
+          type: "string",
+          description: "The common or scientific plant name to look up."
+        }
+      },
+      required: ["plant_name"]
+    }
+  },
+  {
+    type: "function",
+    name: "find_nearest_home_depot",
+    description:
+      "Find the nearest Home Depot locations to a provided address and summarize the closest options.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: {
+          type: "string",
+          description: "A full or partial street address, city, or ZIP code in the United States."
+        }
+      },
+      required: ["address"]
+    }
+  }
+];
+
 function buildRealtimeInstructions(channel = "web") {
   const channelGuidance =
     channel === "phone"
@@ -80,6 +115,8 @@ function buildRealtimeInstructions(channel = "web") {
     "When someone seems ready, confidently suggest a next step such as choosing a plant, adding accessories, or scheduling a follow-up.",
     "Never invent inventory, plant safety, or care facts beyond the catalog and general common-sense care advice.",
     "If asked about pet safety, be precise and conservative.",
+    "You can use tools to look up plant care information outside the local catalog and to find the nearest Home Depot to a customer address.",
+    "If using the Home Depot tool, present it as a store-location or pickup/delivery convenience lookup, not as a guaranteed delivery promise.",
     "Keep answers under 3 sentences unless the user asks for more detail.",
     channelGuidance,
     `Current catalog: ${catalogSummary}`
@@ -112,7 +149,9 @@ function buildSessionConfig(channel = "web") {
       output: {
         voice: defaultVoice
       }
-    }
+    },
+    tools: realtimeTools,
+    tool_choice: "auto"
   };
 }
 
@@ -148,7 +187,9 @@ function buildPhoneBridgeSessionConfig() {
         },
         voice: defaultVoice
       }
-    }
+    },
+    tools: realtimeTools,
+    tool_choice: "auto"
   };
 }
 
@@ -165,6 +206,238 @@ function ensureOpenAiKey(res) {
 
 function safeErrorMessage(error) {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function toSlug(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const toRadians = (degrees) => (degrees * Math.PI) / 180;
+  const earthRadiusMiles = 3958.8;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2;
+  return earthRadiusMiles * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+async function lookupPlantCare(plantName) {
+  if (!plantName) {
+    return { error: "Missing plant name." };
+  }
+
+  const query = encodeURIComponent(plantName);
+  const searchUrl =
+    `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${query}` +
+    "&utf8=1&format=json&origin=*";
+  const searchResponse = await fetch(searchUrl, {
+    headers: {
+      "User-Agent": "fern-sales-agent/1.0 (plant care lookup)"
+    }
+  });
+
+  if (!searchResponse.ok) {
+    throw new Error(`Wikipedia search failed (${searchResponse.status}).`);
+  }
+
+  const searchData = await searchResponse.json();
+  const firstResult = searchData?.query?.search?.[0];
+
+  if (!firstResult?.title) {
+    return {
+      plant_name: plantName,
+      found: false,
+      summary:
+        "No reliable external plant-care entry was found. Use the local catalog or ask a follow-up question."
+    };
+  }
+
+  const summaryResponse = await fetch(
+    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(firstResult.title)}`,
+    {
+      headers: {
+        "User-Agent": "fern-sales-agent/1.0 (plant care lookup)"
+      }
+    }
+  );
+
+  if (!summaryResponse.ok) {
+    throw new Error(`Wikipedia summary failed (${summaryResponse.status}).`);
+  }
+
+  const summaryData = await summaryResponse.json();
+  return {
+    plant_name: plantName,
+    found: true,
+    source_title: summaryData.title,
+    source_url: summaryData.content_urls?.desktop?.page || null,
+    summary: summaryData.extract || "No summary available."
+  };
+}
+
+async function geocodeAddress(address) {
+  const url =
+    `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&q=${encodeURIComponent(address)}`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "fern-sales-agent/1.0 (address lookup)",
+      Referer: publicBaseUrl || startupUrl
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Address lookup failed (${response.status}).`);
+  }
+
+  const data = await response.json();
+  const match = data?.[0];
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    address: match.display_name,
+    lat: Number(match.lat),
+    lon: Number(match.lon)
+  };
+}
+
+async function findNearestHomeDepot(address) {
+  if (!address) {
+    return { error: "Missing address." };
+  }
+
+  const geocoded = await geocodeAddress(address);
+  if (!geocoded) {
+    return {
+      found: false,
+      address,
+      message: "No matching address could be geocoded."
+    };
+  }
+
+  const radiusMeters = 80000;
+  const overpassQuery = `
+    [out:json][timeout:25];
+    (
+      node(around:${radiusMeters},${geocoded.lat},${geocoded.lon})["brand"="The Home Depot"];
+      way(around:${radiusMeters},${geocoded.lat},${geocoded.lon})["brand"="The Home Depot"];
+      relation(around:${radiusMeters},${geocoded.lat},${geocoded.lon})["brand"="The Home Depot"];
+    );
+    out center tags;
+  `;
+
+  const overpassResponse = await fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;charset=UTF-8",
+      "User-Agent": "fern-sales-agent/1.0 (home depot lookup)"
+    },
+    body: overpassQuery
+  });
+
+  if (!overpassResponse.ok) {
+    throw new Error(`Store lookup failed (${overpassResponse.status}).`);
+  }
+
+  const overpassData = await overpassResponse.json();
+  const stores = (overpassData?.elements || [])
+    .map((element) => {
+      const lat = element.lat ?? element.center?.lat;
+      const lon = element.lon ?? element.center?.lon;
+      if (typeof lat !== "number" || typeof lon !== "number") {
+        return null;
+      }
+
+      return {
+        name: element.tags?.name || "The Home Depot",
+        address: [
+          element.tags?.["addr:housenumber"],
+          element.tags?.["addr:street"],
+          element.tags?.["addr:city"],
+          element.tags?.["addr:state"],
+          element.tags?.["addr:postcode"]
+        ]
+          .filter(Boolean)
+          .join(", "),
+        distance_miles: Number(haversineMiles(geocoded.lat, geocoded.lon, lat, lon).toFixed(1))
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.distance_miles - b.distance_miles)
+    .slice(0, 3);
+
+  if (!stores.length) {
+    return {
+      found: false,
+      address: geocoded.address,
+      message: "No Home Depot locations were found near that address."
+    };
+  }
+
+  return {
+    found: true,
+    searched_address: geocoded.address,
+    stores
+  };
+}
+
+async function runTool(toolName, rawArguments) {
+  const parsedArguments =
+    typeof rawArguments === "string" ? JSON.parse(rawArguments || "{}") : rawArguments || {};
+
+  if (toolName === "lookup_plant_care") {
+    return lookupPlantCare(parsedArguments.plant_name);
+  }
+
+  if (toolName === "find_nearest_home_depot") {
+    return findNearestHomeDepot(parsedArguments.address);
+  }
+
+  return { error: `Unknown tool: ${toolName}` };
+}
+
+async function handleRealtimeToolCalls(outputs, respondWithAudio, socketOrChannel) {
+  const functionCalls = (outputs || []).filter((output) => output.type === "function_call");
+
+  for (const functionCall of functionCalls) {
+    const toolResult = await runTool(functionCall.name, functionCall.arguments);
+    const event = {
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: functionCall.call_id,
+        output: JSON.stringify(toolResult)
+      }
+    };
+
+    if (socketOrChannel.readyState === WebSocket.OPEN) {
+      socketOrChannel.send(JSON.stringify(event));
+      socketOrChannel.send(
+        JSON.stringify({
+          type: "response.create",
+          response: respondWithAudio
+            ? {
+                output_modalities: ["audio"]
+              }
+            : {}
+        })
+      );
+    } else {
+      socketOrChannel.send(JSON.stringify(event));
+      socketOrChannel.send(
+        JSON.stringify({
+          type: "response.create"
+        })
+      );
+    }
+  }
 }
 
 async function createRealtimeCall(sdp, channel = "web") {
@@ -382,6 +655,12 @@ function attachTwilioMediaBridge(clientSocket) {
         sendTwilioMedia(clientSocket, twilioStreamSid, event.delta);
       }
 
+      if (event.type === "response.done") {
+        handleRealtimeToolCalls(event.response?.output, true, openAiSocket).catch((error) => {
+          console.error("Failed to handle phone tool call:", error);
+        });
+      }
+
       if (event.type === "input_audio_buffer.speech_started") {
         sendTwilioClear(clientSocket, twilioStreamSid);
       }
@@ -463,6 +742,24 @@ app.get("/api/catalog", (_req, res) => {
     assistantName,
     plants: plantCatalog
   });
+});
+
+app.get("/api/tools/plant-care", async (req, res) => {
+  try {
+    const result = await lookupPlantCare(req.query.plant_name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: safeErrorMessage(error) });
+  }
+});
+
+app.get("/api/tools/home-depot", async (req, res) => {
+  try {
+    const result = await findNearestHomeDepot(req.query.address);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: safeErrorMessage(error) });
+  }
 });
 
 app.post("/api/twilio/voice", (_req, res) => {
