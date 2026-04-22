@@ -14,7 +14,7 @@ const app = express();
 const port = Number(process.env.PORT || 3000);
 
 const assistantName = process.env.ASSISTANT_NAME || "Fern";
-const defaultVoice = process.env.OPENAI_REALTIME_VOICE || "marin";
+const defaultVoice = process.env.OPENAI_REALTIME_VOICE || "cedar";
 const publicBaseUrl = process.env.PUBLIC_BASE_URL || "";
 const isProduction = process.env.NODE_ENV === "production";
 const startupUrl = publicBaseUrl || `http://localhost:${port}`;
@@ -111,6 +111,8 @@ function buildRealtimeInstructions(channel = "web") {
     "Always identify yourself as an AI assistant early in the conversation.",
     "Your goal is to help people discover and confidently buy the right potted plant.",
     "Sound warm, quick, observant, and conversational rather than scripted.",
+    "Speak with a bright, lively, slightly higher-pitched male-presenting delivery and polished boutique-sales energy.",
+    "Keep the tone playful, expressive, and charming without becoming campy or distracting.",
     "Ask one focused question at a time, listen carefully, and guide the customer toward a specific recommendation.",
     "When someone seems ready, confidently suggest a next step such as choosing a plant, adding accessories, or scheduling a follow-up.",
     "Never invent inventory, plant safety, or care facts beyond the catalog and general common-sense care advice.",
