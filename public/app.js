@@ -98,7 +98,19 @@ async function maybeHandleToolCalls(payload) {
   try {
     for (const toolCall of toolCalls) {
       const args = JSON.parse(toolCall.arguments || "{}");
+      const summary =
+        toolCall.name === "lookup_plant_care"
+          ? `Looking up plant care for <strong>${args.plant_name || "unknown plant"}</strong>.`
+          : `Finding the nearest Home Depot for <strong>${args.address || "unknown address"}</strong>.`;
+      logEvent("tool", summary);
+
       const toolResult = await executeTool(toolCall.name, args);
+
+      const resultSummary =
+        toolCall.name === "lookup_plant_care"
+          ? `Plant care lookup complete for <strong>${args.plant_name || "unknown plant"}</strong>.`
+          : `Home Depot lookup complete for <strong>${args.address || "unknown address"}</strong>.`;
+      logEvent("tool", resultSummary);
 
       dataChannel.send(
         JSON.stringify({
